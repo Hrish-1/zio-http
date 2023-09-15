@@ -61,34 +61,35 @@ object ZIOHTTP extends ZIOAppDefault {
                   _ <- Console.printLine(s"map contains $m")
                 } yield ()
               }
-            _ <- channel.send(Read(WebSocketFrame.text("Greetings!")))
+             greeting = s"{ \"clientId\": \"${id}\", \"message\": \"Greetings!\" }"
+            _ <- channel.send(Read(WebSocketFrame.text(greeting)))
           } yield ()
 
         // Log when the channel is getting closed
-        case Read(WebSocketFrame.Close(status, reason)) =>
+        case e @ Unregistered =>
           for {
             _ <- Console.printLine(
-              "Closing channel with status: " + status + " and reason: " + reason
+              s"Closing channel: $channel with event ${e}"
             )
-            // _ <- ZIO.serviceWithZIO[Ref[Map[String, Set[WSChannel]]]] {
-            //   ref =>
-            //     ref.modify(map => {
-            //       map.get(id) match {
-            //         case Some(value) =>
-            //           ((), map.updated(id, value.filterNot(_.equals(channel))))
-            //         case _ => ((), map)
-            //       }
-            //     })
-            //
-            // }
+            newChannels <- ZIO
+              .serviceWithZIO[Ref[Map[String, Set[WSChannel]]]] { ref =>
+                ref.modify(map => {
+                  map.get(roomName) match {
+                    case Some(value) =>
+                      val newChannels = value.filterNot(_.clientId.equals(id))
+                      (
+                        newChannels.map(_.clientId).toString(),
+                        map.updated(roomName, newChannels)
+                      )
+                    case None => ("", map)
+                  }
+                })
+              }
+            _ <- Console.printLine(
+              s"new channels $newChannels"
+            )
           } yield ()
-
-        // Print the exception if it's not a normal close
-        case ExceptionCaught(cause) =>
-          Console.printLine(s"Channel error!: ${cause.getMessage}")
-
-        case _ =>
-          ZIO.unit
+        case _ => ZIO.unit
       }
     }
 
@@ -98,17 +99,6 @@ object ZIOHTTP extends ZIOAppDefault {
     Http.collectZIO[Request] {
       case Method.GET -> Root / "subscriptions" / id / roomName =>
         socket(id, roomName).toResponse
-      case Method.GET -> Root / "ws" / id / roomName / "close" => 
-        ZIO.serviceWithZIO[Ref[Map[String, Set[WSChannel]]]] { ref =>
-          ref.modify(map => {
-            map.get(roomName) match {
-              case Some(value) =>
-                val newChannels = value.filterNot(_.clientId.equals(id))
-                (Response.text(newChannels.map(_.clientId).toString()), map.updated(roomName, newChannels))
-              case None => (Response.text(""), map)
-            }
-          })
-        }
     }
 
   val combinedApp = app ++ zApp ++ wsApp
